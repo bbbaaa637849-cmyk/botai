@@ -47,6 +47,9 @@ class UserModel(Base):
     respect_dominance = Column(Float, nullable=False, default=0.0)    # [-50.0, 50.0]
 
     relationship_tier = Column(String(32), nullable=False, default="STRANGER")
+    role = Column(String(32), nullable=False, default="MEMBER")  # SUPER_ADMIN, ADMIN, MODERATOR, VIP, MEMBER
+    role_assigned_by = Column(BigInteger, nullable=True)
+    custom_title = Column(String(64), nullable=True)
     is_blocked = Column(Boolean, nullable=False, default=False)
     is_vip = Column(Boolean, nullable=False, default=False)
     notes = Column(Text, nullable=True)

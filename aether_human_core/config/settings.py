@@ -49,6 +49,9 @@ class SystemSettings(BaseSettings):
     telegram_session_name: str = Field(default="aether_userbot", description="SQLite/Pyrogram session file name")
     telegram_session_string: Optional[str] = Field(default=None, description="Telethon/Pyrogram StringSession if available")
 
+    # Governance & Admins
+    admin_user_ids: str = Field(default="", description="Comma-separated Telegram user IDs of Super Admins")
+
     # Storage & Persistence
     postgres_url: str = Field(
         default="sqlite+aiosqlite:///./aether_human.db",
@@ -120,6 +123,20 @@ class SystemSettings(BaseSettings):
             return []
         keys = [k.strip() for k in self.gemini_api_keys.split(",") if k.strip()]
         return keys
+
+    @property
+    def super_admin_ids_list(self) -> List[int]:
+        """
+        Parses comma-delimited admin_user_ids into a list of integer Telegram IDs.
+        """
+        if not self.admin_user_ids:
+            return []
+        ids: List[int] = []
+        for x in str(self.admin_user_ids).split(","):
+            x = x.strip()
+            if x.isdigit():
+                ids.append(int(x))
+        return ids
 
 
 # Singleton global instance

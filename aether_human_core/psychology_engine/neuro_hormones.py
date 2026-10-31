@@ -127,6 +127,32 @@ class NeuroEndocrineEngine:
         logger.info(f"Applied shock [{event_name}] (intensity={intensity:.1f}): {deltas}")
         return deltas
 
+    def update_state_from_event(
+        self,
+        event_name: str,
+        dopamine_delta: float = 0.0,
+        oxytocin_delta: float = 0.0,
+        cortisol_delta: float = 0.0,
+        serotonin_delta: float = 0.0,
+        energy_delta: float = 0.0,
+    ) -> None:
+        """
+        Manually injects direct delta shifts to neurotransmitters (e.g. drinking coffee or chilling).
+        """
+        self.apply_homeostatic_decay()
+        if dopamine_delta:
+            self.state.dopamine = max(0.0, min(1.0, self.state.dopamine + dopamine_delta))
+        if oxytocin_delta:
+            self.state.oxytocin = max(0.0, min(1.0, self.state.oxytocin + oxytocin_delta))
+        if cortisol_delta:
+            self.state.cortisol = max(0.0, min(1.0, self.state.cortisol + cortisol_delta))
+        if serotonin_delta:
+            self.state.serotonin = max(0.0, min(1.0, self.state.serotonin + serotonin_delta))
+        if energy_delta:
+            self.state.energy = max(0.0, min(1.0, self.state.energy + energy_delta))
+        self.state.last_updated = time.time()
+        logger.info(f"Direct endocrine event [{event_name}] applied successfully.")
+
     def evaluate_psychological_mood(self) -> Dict[str, Any]:
         """
         Synthesizes current hormone configuration into a high-level psychological description.

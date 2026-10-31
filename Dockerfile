@@ -25,3 +25,4 @@ EXPOSE 8000
 
 # Execute Project Aether-Human Core Engine
 CMD ["python", "main.py"]
+

@@ -230,3 +230,4 @@ class DialectChameleonService:
 
 # Global instance
 dialect_chameleon = DialectChameleonService()
+

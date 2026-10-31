@@ -148,6 +148,11 @@ class TelegramMTProtoManager:
         """
         Parses incoming Telegram event and delegates to appropriate domain handler.
         """
+        # Intercept Callback Queries (Inline Button Clicks)
+        if "callback_query" in update:
+            await self._process_callback_query(update["callback_query"])
+            return
+
         msg = update.get("message")
         if not msg:
             return
@@ -160,6 +165,18 @@ class TelegramMTProtoManager:
         sender_id = sender.get("id", chat_id)
         sender_name = sender.get("first_name", "صديق")
         message_text = msg.get("text", "") or msg.get("caption", "")
+
+        # Command interception (/start, /menu, /panel, /stats, /mood, /admins, /rules, /dialects, /media, /add_admin, /del_admin, /add_rule, /del_rule, /ban_word, /unban_word)
+        if message_text.startswith("/"):
+            handled_cmd = await self._handle_command(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                message_text=message_text,
+                reply_to_msg_id=message_id,
+            )
+            if handled_cmd:
+                return
 
         # Guess gender from first name heuristics or default unknown
         name_lower = sender_name.lower().strip()
@@ -389,6 +406,270 @@ class TelegramMTProtoManager:
             except Exception as exc:
                 logger.debug(f"Telethon reaction exception: {exc}")
 
+    async def _process_callback_query(self, cb: Dict[str, Any]) -> None:
+        """
+        Handles interactive inline button clicks from Telegram menus.
+        """
+        query_id = cb.get("id")
+        from_user = cb.get("from", {})
+        user_id = from_user.get("id", 0)
+        user_name = from_user.get("first_name", "صديق")
+        data = cb.get("data", "")
+        msg = cb.get("message", {})
+        chat_id = msg.get("chat", {}).get("id", user_id)
+        message_id = msg.get("message_id")
+
+        from aether_human_core.telegram_client.telegram_menu import telegram_menu
+        text, markup, alert, trigger = await telegram_menu.handle_callback(data, user_id)
+
+        http = await self._get_http() if self.bot_token else None
+
+        # 1. Answer callback query
+        if http:
+            ans_payload: Dict[str, Any] = {"callback_query_id": query_id}
+            if alert:
+                ans_payload["text"] = alert
+                ans_payload["show_alert"] = True
+            try:
+                await http.post(f"{self.bot_api_url}/answerCallbackQuery", json=ans_payload)
+            except Exception as exc:
+                logger.debug(f"answerCallbackQuery error: {exc}")
+
+        # 2. Update message content if needed
+        if text and message_id and http:
+            try:
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "reply_markup": markup or {},
+                }
+                res = await http.post(f"{self.bot_api_url}/editMessageText", json=edit_payload)
+                if res.status_code != 200:
+                    edit_payload.pop("parse_mode", None)
+                    await http.post(f"{self.bot_api_url}/editMessageText", json=edit_payload)
+            except Exception as exc:
+                logger.debug(f"editMessageText error: {exc}")
+
+        # 3. Handle action trigger if requested
+        if trigger == "send_voice":
+            from aether_human_core.telegram_client.handlers.media_handler import media_handler
+            await media_handler.handle_voice_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=user_id,
+                sender_name=user_name,
+                message_text="ابعتلي فويس ضروري يا عمر",
+            )
+        elif trigger == "send_photo":
+            from aether_human_core.telegram_client.handlers.media_handler import media_handler
+            await media_handler.handle_photo_request(
+                message_id=message_id,
+                chat_id=chat_id,
+                sender_id=user_id,
+                sender_name=user_name,
+                message_text="ابعتلي صورتك سيلفي دلوقتي يا عمر",
+            )
+
+    async def _handle_command(
+        self,
+        chat_id: int,
+        sender_id: int,
+        sender_name: str,
+        message_text: str,
+        reply_to_msg_id: Optional[int] = None,
+    ) -> bool:
+        """
+        Dispatches slash commands (/menu, /stats, /mood, /admins, /rules, /add_admin, /ban_word, etc.)
+        """
+        from aether_human_core.telegram_client.telegram_menu import telegram_menu
+        from aether_human_core.psychology_engine.admin_manager import admin_manager
+        from aether_human_core.psychology_engine.anti_toxicity import anti_toxicity
+
+        parts = message_text.strip().split()
+        if not parts:
+            return False
+        cmd = parts[0].lower().split("@")[0]
+
+        if cmd in ("/start", "/menu", "/panel", "/control"):
+            text, markup = await telegram_menu.render_main_dashboard(sender_id)
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/stats", "/server", "/system"):
+            text, markup = await telegram_menu.render_server_stats()
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/mood", "/radar", "/hormones"):
+            text, markup = await telegram_menu.render_mood_radar()
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/admins", "/roles"):
+            text, markup = await telegram_menu.render_admins_panel(sender_id)
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/rules", "/laws"):
+            text, markup = await telegram_menu.render_rules_panel()
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/dialects", "/languages", "/accents"):
+            text, markup = await telegram_menu.render_dialects_info()
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/media", "/test_media"):
+            text, markup = await telegram_menu.render_media_center()
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd == "/add_admin":
+            if not await admin_manager.is_admin(sender_id):
+                refusal = "🚫 <b>عفواً يا غالي:</b>\n<blockquote>هذا الأمر مخصص لأصحاب الرتب الإدارية العليا والسوبر أدمن فقط 🛡️</blockquote>"
+                await self.send_message_with_keyboard(chat_id, refusal, {}, reply_to_msg_id)
+                return True
+            if len(parts) < 2:
+                help_msg = "ℹ️ <b>طريقة الاستخدام:</b>\n<code>/add_admin &lt;user_id&gt; [ADMIN|MODERATOR|VIP]</code>"
+                await self.send_message_with_keyboard(chat_id, help_msg, {}, reply_to_msg_id)
+                return True
+            try:
+                target_id = int(parts[1])
+                target_role = parts[2].upper() if len(parts) > 2 else "ADMIN"
+                ok, msg = await admin_manager.promote_user(target_id, target_role, assigned_by=sender_id)
+                status_icon = "👑" if ok else "⚠️"
+                resp = f"{status_icon} <b>إدارة الصلاحيات:</b>\n<blockquote>{msg}</blockquote>"
+                await self.send_message_with_keyboard(chat_id, resp, {}, reply_to_msg_id)
+            except ValueError:
+                await self.send_message_with_keyboard(chat_id, "⚠️ يجب كتابة الـ User ID كأرقام فقط.", {}, reply_to_msg_id)
+            return True
+
+        elif cmd == "/del_admin":
+            if not await admin_manager.is_admin(sender_id):
+                refusal = "🚫 <b>عفواً:</b> هذه الصلاحية للأدمن فقط."
+                await self.send_message_with_keyboard(chat_id, refusal, {}, reply_to_msg_id)
+                return True
+            if len(parts) < 2:
+                await self.send_message_with_keyboard(chat_id, "ℹ️ الاستخدام: <code>/del_admin &lt;user_id&gt;</code>", {}, reply_to_msg_id)
+                return True
+            try:
+                target_id = int(parts[1])
+                ok, msg = await admin_manager.demote_user(target_id, assigned_by=sender_id)
+                resp = f"🛡️ <b>تعديل الصلاحيات:</b>\n<blockquote>{msg}</blockquote>"
+                await self.send_message_with_keyboard(chat_id, resp, {}, reply_to_msg_id)
+            except ValueError:
+                await self.send_message_with_keyboard(chat_id, "⚠️ يجب كتابة الـ User ID كأرقام فقط.", {}, reply_to_msg_id)
+            return True
+
+        elif cmd == "/add_rule":
+            if not await admin_manager.is_admin(sender_id):
+                await self.send_message_with_keyboard(chat_id, "🚫 عذراً، إضافة القواعد مقتصرة على الأدمنز.", {}, reply_to_msg_id)
+                return True
+            rule_text = message_text[len(parts[0]):].strip()
+            if not rule_text:
+                await self.send_message_with_keyboard(chat_id, "ℹ️ الاستخدام: <code>/add_rule نص القاعدة الجديدة هنا</code>", {}, reply_to_msg_id)
+                return True
+            ok, msg = await admin_manager.add_dynamic_rule(operator_id=sender_id, instruction_text=rule_text, rule_type="RESTRICTION")
+            resp = (
+                f"📜 <b>تم اعتماد وتثبيت القاعدة الجديدة في عقل عمر:</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<blockquote>{rule_text}</blockquote>\n"
+                f"<i>محفوظة بصفة دائمة في قاعدة البيانات ولن تُمسح مع أي إعادة تشغيل.</i>"
+            )
+            await self.send_message_with_keyboard(chat_id, resp, {}, reply_to_msg_id)
+            return True
+
+        elif cmd == "/del_rule":
+            if not await admin_manager.is_admin(sender_id):
+                await self.send_message_with_keyboard(chat_id, "🚫 عذراً، حذف القواعد مقتصر على الأدمنز.", {}, reply_to_msg_id)
+                return True
+            if len(parts) < 2:
+                await self.send_message_with_keyboard(chat_id, "ℹ️ الاستخدام: <code>/del_rule &lt;rule_id&gt;</code>", {}, reply_to_msg_id)
+                return True
+            try:
+                target_rule_id = int(parts[1])
+                ok, msg = await admin_manager.delete_dynamic_rule(operator_id=sender_id, rule_id=target_rule_id)
+                await self.send_message_with_keyboard(chat_id, msg, {}, reply_to_msg_id)
+            except ValueError:
+                await self.send_message_with_keyboard(chat_id, "⚠️ يجب كتابة رقم القاعدة كأرقام (مثال: /del_rule 1).", {}, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/ban_word", "/block_word"):
+            if not await admin_manager.is_admin(sender_id):
+                await self.send_message_with_keyboard(chat_id, "🚫 عذراً، حظر الكلمات مقتصر على الأدمنز.", {}, reply_to_msg_id)
+                return True
+            word_to_ban = message_text[len(parts[0]):].strip()
+            if not word_to_ban:
+                await self.send_message_with_keyboard(chat_id, "ℹ️ الاستخدام: <code>/ban_word الكلمة</code>", {}, reply_to_msg_id)
+                return True
+            anti_toxicity.add_banned_word(word_to_ban)
+            await admin_manager.add_dynamic_rule(
+                operator_id=sender_id,
+                instruction_text=f"ممنوع استخدام كلمة: {word_to_ban}",
+                rule_type="PROHIBITION",
+            )
+            resp = f"🛡️ <b>تم حظر الكلمة فوراً:</b>\n<blockquote>تم إدراج «{word_to_ban}» في القائمة السوداء الفورية وممنوع التلفظ بها نهائياً.</blockquote>"
+            await self.send_message_with_keyboard(chat_id, resp, {}, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/unban_word"):
+            if not await admin_manager.is_admin(sender_id):
+                await self.send_message_with_keyboard(chat_id, "🚫 عذراً، مقتصر على الأدمنز.", {}, reply_to_msg_id)
+                return True
+            word = message_text[len(parts[0]):].strip()
+            removed = anti_toxicity.remove_banned_word(word)
+            msg = f"✅ تم رفع الحظر عن «{word}»." if removed else f"⚠️ الكلمة «{word}» لم تكن في قائمة الحظر الخاصة."
+            await self.send_message_with_keyboard(chat_id, msg, {}, reply_to_msg_id)
+            return True
+
+        return False
+
+    async def send_message_with_keyboard(
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: Dict[str, Any],
+        reply_to_msg_id: Optional[int] = None,
+    ) -> None:
+        """
+        Sends formatted message with inline keyboard markup and anti-ban throttling.
+        """
+        from aether_human_core.config.anti_ban_shield import anti_ban_shield
+        from aether_human_core.psychology_engine.anti_toxicity import anti_toxicity
+
+        await anti_ban_shield.wait_for_telegram_slot(chat_id)
+        text = anti_toxicity.sanitize_outgoing_speech(text)
+
+        if self._mock_mode or (not self.bot_token and not self.client):
+            logger.info(f"[Simulation Outgoing Menu] Chat {chat_id} -> '{text[:60]}...'")
+            return
+
+        if self.bot_token:
+            http = await self._get_http()
+            payload: Dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "reply_markup": reply_markup,
+            }
+            if reply_to_msg_id:
+                payload["reply_to_message_id"] = reply_to_msg_id
+            try:
+                res = await http.post(f"{self.bot_api_url}/sendMessage", json=payload)
+                if res.status_code != 200:
+                    payload.pop("parse_mode", None)
+                    await http.post(f"{self.bot_api_url}/sendMessage", json=payload)
+            except Exception as exc:
+                logger.error(f"Error sending message with keyboard via Bot API: {exc}")
+        elif self.client:
+            try:
+                await self.client.send_message(chat_id, text, reply_to=reply_to_msg_id)
+            except Exception as exc:
+                logger.error(f"Error sending message with keyboard via Telethon: {exc}")
+
     async def dispatch_burst_messages(
         self,
         chat_id: int,
@@ -397,10 +678,21 @@ class TelegramMTProtoManager:
     ) -> None:
         """
         Sends sequential message bubbles with realistic typing latencies and typo self-corrections.
+        Protected by Anti-Ban Flood Token Bucket and Anti-Toxicity Outgoing Speech Sanitizer.
         """
         http = await self._get_http() if self.bot_token else None
+        from aether_human_core.config.anti_ban_shield import anti_ban_shield
+        from aether_human_core.psychology_engine.anti_toxicity import anti_toxicity
 
         for i, burst in enumerate(bursts):
+            # Enforce Telegram Anti-Ban Token-Bucket & per-chat rate limits
+            await anti_ban_shield.wait_for_telegram_slot(chat_id)
+
+            # Strictly sanitize outgoing text - ZERO PROFANITY GUARANTEE
+            burst.text = anti_toxicity.sanitize_outgoing_speech(burst.text)
+            if burst.correction_text:
+                burst.correction_text = anti_toxicity.sanitize_outgoing_speech(burst.correction_text)
+
             # 1. Simulate human typing latency
             await self.send_typing_indicator(chat_id, burst.typing_delay_sec)
 
@@ -411,14 +703,24 @@ class TelegramMTProtoManager:
                 logger.info(f"[Simulation Outgoing] Chat {chat_id} -> '{burst.text}'")
             elif self.bot_token and http:
                 try:
-                    payload: Dict[str, Any] = {"chat_id": chat_id, "text": burst.text}
+                    payload: Dict[str, Any] = {
+                        "chat_id": chat_id,
+                        "text": burst.text,
+                        "parse_mode": "HTML",
+                    }
                     if reply_target:
                         payload["reply_to_message_id"] = reply_target
                     res = await http.post(f"{self.bot_api_url}/sendMessage", json=payload)
                     if res.status_code == 200:
                         logger.info(f"📤 [Telegram Sent] Chat [{chat_id}]: '{burst.text}'")
                     else:
-                        logger.warning(f"Failed to send message: {res.text}")
+                        # Fallback without parse_mode if entity formatting error
+                        payload.pop("parse_mode", None)
+                        fallback_res = await http.post(f"{self.bot_api_url}/sendMessage", json=payload)
+                        if fallback_res.status_code == 200:
+                            logger.info(f"📤 [Telegram Sent Fallback] Chat [{chat_id}]: '{burst.text}'")
+                        else:
+                            logger.warning(f"Failed to send message: {fallback_res.text}")
                 except Exception as exc:
                     logger.error(f"Error dispatching burst message via Bot API: {exc}")
             elif self.client:

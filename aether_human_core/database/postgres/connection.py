@@ -61,11 +61,30 @@ class DatabaseManager:
 
     async def init_schema(self) -> None:
         """
-        Creates all defined database tables if they do not exist.
+        Creates all defined database tables if they do not exist,
+        and applies automatic non-destructive schema migrations.
         """
         async with self.engine.begin() as conn:
             logger.info("Verifying and building relational database schema...")
             await conn.run_sync(Base.metadata.create_all)
+
+            def apply_safe_migrations(sync_conn):
+                try:
+                    if "sqlite" in self.db_url:
+                        cursor = sync_conn.connection.cursor()
+                        cursor.execute("PRAGMA table_info(users)")
+                        existing_cols = [row[1] for row in cursor.fetchall()]
+                        if "role" not in existing_cols:
+                            cursor.execute("ALTER TABLE users ADD COLUMN role VARCHAR(32) DEFAULT 'MEMBER'")
+                        if "role_assigned_by" not in existing_cols:
+                            cursor.execute("ALTER TABLE users ADD COLUMN role_assigned_by BIGINT")
+                        if "custom_title" not in existing_cols:
+                            cursor.execute("ALTER TABLE users ADD COLUMN custom_title VARCHAR(128)")
+                        cursor.close()
+                except Exception as ex:
+                    logger.debug(f"Migration step note: {ex}")
+
+            await conn.run_sync(apply_safe_migrations)
             logger.info("Relational database schema ready.")
 
     async def close(self) -> None:
