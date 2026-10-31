@@ -1,0 +1,47 @@
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Sensitive Environments & Keys
+.env
+.env.local
+.env.*.local
+
+# Telegram Sessions
+*.session
+*.session-journal
+aether_userbot.session
+
+# Database Persistence
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Media Artifacts
+artifacts/generated_photos/*
+artifacts/voice_notes/*
+artifacts/*.jpg
+artifacts/*.jpeg
+artifacts/*.png
+artifacts/*.ogg
+artifacts/*.wav
+artifacts/*.mp3
+!artifacts/voice_notes/.gitkeep
+!artifacts/generated_photos/.gitkeep
+
+# Testing, Logs & IDE
+*.log
+.pytest_cache/
+.vscode/
+.idea/
